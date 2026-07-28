@@ -1,6 +1,57 @@
-
+import pandas as pd
 import plotly.express as px
 import streamlit as st
+
+def merge_environmental_data(
+    forest_data: pd.DataFrame,
+    population_data: pd.DataFrame,
+    gdp_data: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Combine forest, population, and GDP data by country and year.
+    """
+
+    forest = forest_data.rename(
+        columns={"value": "forest_percent"}
+    )
+
+    population = population_data.rename(
+        columns={"value": "population"}
+    )
+
+    gdp = gdp_data.rename(
+        columns={"value": "gdp_per_capita"}
+    )
+
+    merged_data = forest.merge(
+        population[
+            [
+                "country_code",
+                "year",
+                "population",
+            ]
+        ],
+        on=["country_code", "year"],
+        how="inner",
+    )
+
+    merged_data = merged_data.merge(
+        gdp[
+            [
+                "country_code",
+                "year",
+                "gdp_per_capita",
+            ]
+        ],
+        on=["country_code", "year"],
+        how="inner",
+    )
+
+    return (
+        merged_data
+        .sort_values(["country", "year"])
+        .reset_index(drop=True)
+    )
 
 from world_bank_api import get_indicator_data
 
@@ -36,7 +87,32 @@ def load_forest_data():
         start_year=1990,
         end_year=2023,
     )
+@st.cache_data(ttl=86400)
+def load_population_data():
+    """
+    Retrieve total population data for the selected countries.
+    """
 
+    return get_indicator_data(
+        country_codes=list(COUNTRIES.values()),
+        indicator="SP.POP.TOTL",
+        start_year=1990,
+        end_year=2023,
+    )
+
+
+@st.cache_data(ttl=86400)
+def load_gdp_data():
+    """
+    Retrieve GDP per capita data for the selected countries.
+    """
+
+    return get_indicator_data(
+        country_codes=list(COUNTRIES.values()),
+        indicator="NY.GDP.PCAP.CD",
+        start_year=1990,
+        end_year=2023,
+    )
 
 st.title("🌳 What Is a Forest Worth?")
 
@@ -73,6 +149,23 @@ st.write(
 
 try:
     forest_data = load_forest_data()
+    population_data = load_population_data()
+    gdp_data = load_gdp_data()
+    merged_data = merge_environmental_data(
+        forest_data=forest_data,
+        population_data=population_data,
+        gdp_data=gdp_data,
+    )
+    
+
+except Exception as error:
+    st.error(
+        "The application could not retrieve data from "
+        "the World Bank API."
+    )
+
+    st.exception(error)
+    st.stop()
 
 except Exception as error:
     st.error(
@@ -99,8 +192,22 @@ selected_country_codes = [
 filtered_data = forest_data[
     forest_data["country_code"].isin(selected_country_codes)
 ].copy()
+filtered_population = population_data[
+    population_data["country_code"].isin(
+        selected_country_codes
+    )
+].copy()
 
-
+filtered_gdp = gdp_data[
+    gdp_data["country_code"].isin(
+        selected_country_codes
+    )
+].copy()
+filtered_merged_data = merged_data[
+    merged_data["country_code"].isin(
+        selected_country_codes
+    )
+].copy()
 if not selected_countries:
     st.warning(
         "Select at least one country using the sidebar."
@@ -198,7 +305,82 @@ else:
             hide_index=True,
         )
 
+st.header("Population and Economic Development")
 
+st.write(
+    """
+    Forest change does not happen in isolation. Population growth
+    and economic development may increase demand for housing,
+    agriculture, infrastructure, energy, and other land uses.
+    """
+)
+
+population_figure = px.line(
+    filtered_population,
+    x="year",
+    y="value",
+    color="country",
+    labels={
+        "year": "Year",
+        "value": "Population",
+        "country": "Country",
+    },
+    title="Total Population, 1990–2023",
+)
+
+population_figure.update_layout(
+    hovermode="x unified",
+    legend_title_text="Country",
+)
+
+st.plotly_chart(
+    population_figure,
+    width="stretch",
+)
+
+gdp_figure = px.line(
+    filtered_gdp,
+    x="year",
+    y="value",
+    color="country",
+    labels={
+        "year": "Year",
+        "value": "GDP per capita (current US$)",
+        "country": "Country",
+    },
+    title="GDP per Capita, 1990–2023",
+)
+
+gdp_figure.update_layout(
+    hovermode="x unified",
+    legend_title_text="Country",
+)
+
+st.plotly_chart(
+    gdp_figure,
+    width="stretch",
+)
+
+st.caption(
+    "Source: World Bank World Development Indicators. "
+    "Population indicator: SP.POP.TOTL. "
+    "GDP per capita indicator: NY.GDP.PCAP.CD."
+)
+st.header("Combined Environmental Dataset")
+
+st.write(
+    """
+    This table combines forest area, population, and GDP per
+    capita for the same country and year.
+    """
+)
+
+with st.expander("View combined data"):
+    st.dataframe(
+        filtered_merged_data,
+        width="stretch",
+        hide_index=True,
+    )
 st.header("How to Interpret This Information")
 
 st.markdown(
