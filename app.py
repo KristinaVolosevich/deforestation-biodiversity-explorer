@@ -91,9 +91,14 @@ if forest_data.empty:
     st.stop()
 
 
-filtered_data = forest_data[
-    forest_data["country"].isin(selected_countries)
+selected_country_codes = [
+    COUNTRIES[country_name]
+    for country_name in selected_countries
 ]
+
+filtered_data = forest_data[
+    forest_data["country_code"].isin(selected_country_codes)
+].copy()
 
 
 if not selected_countries:
