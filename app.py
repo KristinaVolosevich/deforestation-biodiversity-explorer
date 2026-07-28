@@ -72,7 +72,104 @@ def merge_environmental_data(
         .reset_index(drop=True)
     )
 
+def calculate_annual_changes(
+    merged_data: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Calculate annual changes for forest area, population,
+    and GDP per capita within each country.
+    """
 
+    change_data = (
+        merged_data
+        .sort_values(["country_code", "year"])
+        .copy()
+    )
+
+    grouped_data = change_data.groupby(
+        "country_code",
+        group_keys=False,
+    )
+
+    change_data["forest_change_pp"] = (
+        grouped_data["forest_percent"]
+        .diff()
+    )
+
+    change_data["population_growth_pct"] = (
+        grouped_data["population"]
+        .transform(
+            lambda series: (
+                series.pct_change(fill_method=None) * 100
+            )
+        )
+    )
+
+    change_data["gdp_growth_pct"] = (
+        grouped_data["gdp_per_capita"]
+        .transform(
+            lambda series: (
+                series.pct_change(fill_method=None) * 100
+            )
+        )
+    )
+
+    return (
+        change_data
+        .dropna(
+            subset=[
+                "forest_change_pp",
+                "population_growth_pct",
+                "gdp_growth_pct",
+            ]
+        )
+        .reset_index(drop=True)
+    )
+
+
+def build_correlation_table(
+    change_data: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Calculate Pearson correlations separately for each country.
+    """
+
+    correlation_rows = []
+
+    for country, country_data in change_data.groupby(
+        "country"
+    ):
+        correlation_rows.append(
+            {
+                "Country": country,
+                (
+                    "Forest change vs. population "
+                    "growth (r)"
+                ): country_data[
+                    "forest_change_pp"
+                ].corr(
+                    country_data[
+                        "population_growth_pct"
+                    ]
+                ),
+                (
+                    "Forest change vs. GDP growth (r)"
+                ): country_data[
+                    "forest_change_pp"
+                ].corr(
+                    country_data[
+                        "gdp_growth_pct"
+                    ]
+                ),
+            }
+        )
+
+    return (
+        pd.DataFrame(correlation_rows)
+        .round(3)
+        .sort_values("Country")
+        .reset_index(drop=True)
+    )
 @st.cache_data(ttl=86400)
 def load_forest_data() -> pd.DataFrame:
     """
@@ -159,6 +256,9 @@ try:
         population_data=population_data,
         gdp_data=gdp_data,
     )
+    annual_change_data = calculate_annual_changes(
+    merged_data
+)
 
 except Exception as error:
     st.error(
@@ -173,6 +273,7 @@ if (
     or population_data.empty
     or gdp_data.empty
     or merged_data.empty
+    or annual_change_data.empty
 ):
     st.warning(
         "The World Bank API did not return all required data."
@@ -202,7 +303,15 @@ filtered_merged_data = merged_data[
         selected_country_codes
     )
 ].copy()
+filtered_change_data = annual_change_data[
+    annual_change_data["country_code"].isin(
+        selected_country_codes
+    )
+].copy()
 
+correlation_table = build_correlation_table(
+    filtered_change_data
+)
 
 st.header("Forest Area Over Time")
 
@@ -386,21 +495,119 @@ with st.expander("View combined data"):
         hide_index=True,
     )
 
+st.header("Statistical Relationships")
 
+st.write(
+    """
+    The charts below compare annual changes rather than raw
+    levels. This reduces the risk of finding misleading
+    correlations simply because multiple variables trend over
+    time.
+    """
+)
+
+analysis_column_1, analysis_column_2 = st.columns(2)
+
+population_scatter = px.scatter(
+    filtered_change_data,
+    x="population_growth_pct",
+    y="forest_change_pp",
+    color="country",
+    hover_data=["year"],
+    labels={
+        "population_growth_pct": (
+            "Annual population growth (%)"
+        ),
+        "forest_change_pp": (
+            "Annual forest-area change "
+            "(percentage points)"
+        ),
+        "country": "Country",
+        "year": "Year",
+    },
+    title=(
+        "Forest Change vs. "
+        "Population Growth"
+    ),
+)
+
+analysis_column_1.plotly_chart(
+    population_scatter,
+    width="stretch",
+)
+
+gdp_scatter = px.scatter(
+    filtered_change_data,
+    x="gdp_growth_pct",
+    y="forest_change_pp",
+    color="country",
+    hover_data=["year"],
+    labels={
+        "gdp_growth_pct": (
+            "Annual GDP-per-capita growth (%)"
+        ),
+        "forest_change_pp": (
+            "Annual forest-area change "
+            "(percentage points)"
+        ),
+        "country": "Country",
+        "year": "Year",
+    },
+    title=(
+        "Forest Change vs. "
+        "GDP-per-Capita Growth"
+    ),
+)
+
+analysis_column_2.plotly_chart(
+    gdp_scatter,
+    width="stretch",
+)
+
+st.subheader("Country-Level Correlations")
+
+st.dataframe(
+    correlation_table,
+    width="stretch",
+    hide_index=True,
+)
+
+st.caption(
+    """
+    Pearson correlation coefficients range from -1 to +1.
+    Negative values indicate that higher growth tended to occur
+    during years with greater forest decline. Positive values
+    indicate that higher growth tended to occur during years
+    with increasing or less rapidly declining forest area.
+    """
+)
 st.header("How to Interpret This Information")
 
 st.markdown(
     """
-    A declining forest percentage may indicate deforestation,
-    land conversion, or other changes in land use.
+    A decline in forest percentage may reflect deforestation,
+    conversion of forests to agriculture, infrastructure
+    development, or other changes in land use.
 
-    However, these charts alone cannot establish why forest area
-    changed. Economic growth, agricultural expansion, population
-    change, conservation policy, and other factors must be
-    investigated separately.
+    The scatterplots and correlations identify statistical
+    associations, not cause-and-effect relationships. Population
+    or economic growth may occur alongside forest loss without
+    directly causing it.
 
-    Relationships between the variables should be interpreted as
-    associations rather than proof that one variable caused changes
-    in another.
+    Other possible influences include agricultural exports,
+    logging, mining, road construction, government enforcement,
+    protected areas, conservation funding, political conditions,
+    and changes in how land is measured.
+
+    Using annual changes reduces the problem of shared time
+    trends, but it does not eliminate confounding variables,
+    delayed effects, measurement limitations, or differences
+    among countries.
+
+    Costa Rica is particularly important because its forest share
+    increased over the study period. Its results demonstrate that
+    economic and population growth do not automatically require
+    continuing forest decline when conservation policy and forest
+    recovery alter the relationship.
     """
 )
