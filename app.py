@@ -2,11 +2,11 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from world_bank_api import get_indicator_data
 from database import (
     initialize_database,
     query_annual_change_summary,
 )
+from world_bank_api import get_indicator_data
 
 
 st.set_page_config(
@@ -76,11 +76,12 @@ def merge_environmental_data(
         .reset_index(drop=True)
     )
 
+
 def calculate_annual_changes(
     merged_data: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Calculate annual changes for forest area, population,
+    Calculate annual changes in forest area, population,
     and GDP per capita within each country.
     """
 
@@ -95,6 +96,11 @@ def calculate_annual_changes(
         group_keys=False,
     )
 
+    change_data["year_gap"] = (
+        grouped_data["year"]
+        .diff()
+    )
+
     change_data["forest_change_pp"] = (
         grouped_data["forest_percent"]
         .diff()
@@ -104,7 +110,9 @@ def calculate_annual_changes(
         grouped_data["population"]
         .transform(
             lambda series: (
-                series.pct_change(fill_method=None) * 100
+                series.pct_change(
+                    fill_method=None
+                ) * 100
             )
         )
     )
@@ -113,22 +121,26 @@ def calculate_annual_changes(
         grouped_data["gdp_per_capita"]
         .transform(
             lambda series: (
-                series.pct_change(fill_method=None) * 100
+                series.pct_change(
+                    fill_method=None
+                ) * 100
             )
         )
     )
 
-    return (
-        change_data
-        .dropna(
-            subset=[
-                "forest_change_pp",
-                "population_growth_pct",
-                "gdp_growth_pct",
-            ]
-        )
-        .reset_index(drop=True)
+    change_data = change_data.dropna(
+        subset=[
+            "forest_change_pp",
+            "population_growth_pct",
+            "gdp_growth_pct",
+        ]
     )
+
+    change_data = change_data[
+        change_data["year_gap"] == 1
+    ]
+
+    return change_data.reset_index(drop=True)
 
 
 def build_correlation_table(
@@ -143,30 +155,40 @@ def build_correlation_table(
     for country, country_data in change_data.groupby(
         "country"
     ):
+        if len(country_data) < 2:
+            continue
+
+        population_correlation = country_data[
+            "forest_change_pp"
+        ].corr(
+            country_data[
+                "population_growth_pct"
+            ]
+        )
+
+        gdp_correlation = country_data[
+            "forest_change_pp"
+        ].corr(
+            country_data[
+                "gdp_growth_pct"
+            ]
+        )
+
         correlation_rows.append(
             {
                 "Country": country,
                 (
                     "Forest change vs. population "
                     "growth (r)"
-                ): country_data[
-                    "forest_change_pp"
-                ].corr(
-                    country_data[
-                        "population_growth_pct"
-                    ]
-                ),
+                ): population_correlation,
                 (
                     "Forest change vs. GDP growth (r)"
-                ): country_data[
-                    "forest_change_pp"
-                ].corr(
-                    country_data[
-                        "gdp_growth_pct"
-                    ]
-                ),
+                ): gdp_correlation,
             }
         )
+
+    if not correlation_rows:
+        return pd.DataFrame()
 
     return (
         pd.DataFrame(correlation_rows)
@@ -174,6 +196,8 @@ def build_correlation_table(
         .sort_values("Country")
         .reset_index(drop=True)
     )
+
+
 @st.cache_data(ttl=86400)
 def load_forest_data() -> pd.DataFrame:
     """
@@ -216,6 +240,74 @@ def load_gdp_data() -> pd.DataFrame:
     )
 
 
+@st.cache_data(ttl=86400)
+def load_biodiversity_data() -> pd.DataFrame:
+    """
+    Retrieve threatened-species indicators.
+
+    Keep the latest available observation for each country
+    and species category.
+    """
+
+    indicators = {
+        "Threatened mammals": "EN.MAM.THRD.NO",
+        "Threatened birds": "EN.BIR.THRD.NO",
+        "Threatened higher plants": "EN.HPT.THRD.NO",
+    }
+
+    biodiversity_frames = []
+
+    for category, indicator_code in indicators.items():
+        indicator_data = get_indicator_data(
+            country_codes=list(COUNTRIES.values()),
+            indicator=indicator_code,
+            start_year=1990,
+            end_year=2023,
+        )
+
+        if indicator_data.empty:
+            continue
+
+        indicator_data = indicator_data.copy()
+        indicator_data["category"] = category
+        indicator_data["indicator"] = indicator_code
+
+        biodiversity_frames.append(
+            indicator_data
+        )
+
+    if not biodiversity_frames:
+        return pd.DataFrame(
+            columns=[
+                "country",
+                "country_code",
+                "year",
+                "value",
+                "category",
+                "indicator",
+            ]
+        )
+
+    combined_data = pd.concat(
+        biodiversity_frames,
+        ignore_index=True,
+    )
+
+    latest_data = (
+        combined_data
+        .sort_values("year")
+        .groupby(
+            ["country_code", "category"],
+            group_keys=False,
+        )
+        .tail(1)
+        .sort_values(["country", "category"])
+        .reset_index(drop=True)
+    )
+
+    return latest_data
+
+
 st.title("🌳 What Is a Forest Worth?")
 
 st.subheader(
@@ -250,30 +342,36 @@ selected_country_codes = [
     for country_name in selected_countries
 ]
 
+
 try:
     forest_data = load_forest_data()
     population_data = load_population_data()
     gdp_data = load_gdp_data()
+    biodiversity_data = load_biodiversity_data()
 
     merged_data = merge_environmental_data(
         forest_data=forest_data,
         population_data=population_data,
         gdp_data=gdp_data,
     )
+
     annual_change_data = calculate_annual_changes(
-    merged_data
-)
+        merged_data
+    )
+
     initialize_database(
-    merged_data=merged_data,
-    annual_change_data=annual_change_data,
-)
+        merged_data=merged_data,
+        annual_change_data=annual_change_data,
+    )
+
 except Exception as error:
     st.error(
-        "The application could not retrieve data from "
-        "the World Bank API."
+        "The application could not retrieve or process "
+        "the required environmental data."
     )
     st.exception(error)
     st.stop()
+
 
 if (
     forest_data.empty
@@ -286,6 +384,7 @@ if (
         "The World Bank API did not return all required data."
     )
     st.stop()
+
 
 filtered_forest = forest_data[
     forest_data["country_code"].isin(
@@ -310,8 +409,15 @@ filtered_merged_data = merged_data[
         selected_country_codes
     )
 ].copy()
+
 filtered_change_data = annual_change_data[
     annual_change_data["country_code"].isin(
+        selected_country_codes
+    )
+].copy()
+
+filtered_biodiversity = biodiversity_data[
+    biodiversity_data["country_code"].isin(
         selected_country_codes
     )
 ].copy()
@@ -319,9 +425,16 @@ filtered_change_data = annual_change_data[
 correlation_table = build_correlation_table(
     filtered_change_data
 )
+
 sql_change_summary = query_annual_change_summary(
     selected_country_codes
 )
+
+
+# ---------------------------------------------------------
+# FOREST AREA
+# ---------------------------------------------------------
+
 st.header("Forest Area Over Time")
 
 st.write(
@@ -339,7 +452,8 @@ summary_rows = []
 for country_code in selected_country_codes:
     country_data = (
         filtered_forest[
-            filtered_forest["country_code"] == country_code
+            filtered_forest["country_code"]
+            == country_code
         ]
         .sort_values("year")
     )
@@ -355,8 +469,12 @@ for country_code in selected_country_codes:
             "country": latest_row["country"],
             "start_year": int(first_row["year"]),
             "latest_year": int(latest_row["year"]),
-            "start_value": float(first_row["value"]),
-            "latest_value": float(latest_row["value"]),
+            "start_value": float(
+                first_row["value"]
+            ),
+            "latest_value": float(
+                latest_row["value"]
+            ),
             "change": (
                 float(latest_row["value"])
                 - float(first_row["value"])
@@ -364,8 +482,11 @@ for country_code in selected_country_codes:
         }
     )
 
+
 if summary_rows:
-    summary_columns = st.columns(len(summary_rows))
+    summary_columns = st.columns(
+        len(summary_rows)
+    )
 
     for column, summary in zip(
         summary_columns,
@@ -373,10 +494,13 @@ if summary_rows:
     ):
         column.metric(
             label=summary["country"],
-            value=f'{summary["latest_value"]:.1f}%',
+            value=(
+                f'{summary["latest_value"]:.1f}%'
+            ),
             delta=(
-                f'{summary["change"]:+.1f} percentage points '
-                f'since {summary["start_year"]}'
+                f'{summary["change"]:+.1f} '
+                "percentage points since "
+                f'{summary["start_year"]}'
             ),
         )
 
@@ -384,6 +508,7 @@ if summary_rows:
         "The cards show the latest available forest share "
         "and its change from the first available year."
     )
+
 
 forest_figure = px.line(
     filtered_forest,
@@ -417,7 +542,9 @@ st.caption(
     "indicator AG.LND.FRST.ZS."
 )
 
-with st.expander("View the underlying forest data"):
+with st.expander(
+    "View the underlying forest data"
+):
     st.dataframe(
         filtered_forest,
         width="stretch",
@@ -425,13 +552,18 @@ with st.expander("View the underlying forest data"):
     )
 
 
+# ---------------------------------------------------------
+# POPULATION AND ECONOMIC DEVELOPMENT
+# ---------------------------------------------------------
+
 st.header("Population and Economic Development")
 
 st.write(
     """
-    Forest change does not happen in isolation. Population growth
-    and economic development may increase demand for housing,
-    agriculture, infrastructure, energy, and other land uses.
+    Forest change does not happen in isolation. Population
+    growth and economic development may increase demand for
+    housing, agriculture, infrastructure, energy, and other
+    land uses.
     """
 )
 
@@ -488,21 +620,94 @@ st.caption(
 )
 
 
-st.header("Combined Environmental Dataset")
+# ---------------------------------------------------------
+# BIODIVERSITY
+# ---------------------------------------------------------
+
+st.header("Biodiversity at Risk")
 
 st.write(
     """
-    This table combines forest area, population, and GDP per
-    capita for the same country and year.
+    Tropical forests provide habitat for large numbers of
+    plant and animal species. The chart below shows the latest
+    available reported counts of threatened mammals, birds,
+    and higher plants for the selected countries.
     """
 )
 
-with st.expander("View combined data"):
-    st.dataframe(
-        filtered_merged_data,
-        width="stretch",
-        hide_index=True,
+if filtered_biodiversity.empty:
+    st.warning(
+        "No threatened-species data were available for "
+        "the selected countries."
     )
+
+else:
+    biodiversity_figure = px.bar(
+        filtered_biodiversity,
+        x="country",
+        y="value",
+        color="category",
+        barmode="group",
+        hover_data={
+            "year": True,
+            "indicator": True,
+            "value": ":,.0f",
+        },
+        labels={
+            "country": "Country",
+            "value": "Number of threatened species",
+            "category": "Species category",
+            "year": "Data year",
+            "indicator": "World Bank indicator",
+        },
+        title=(
+            "Latest Available Threatened-Species "
+            "Counts by Country"
+        ),
+    )
+
+    biodiversity_figure.update_layout(
+        legend_title_text="Species category",
+    )
+
+    st.plotly_chart(
+        biodiversity_figure,
+        width="stretch",
+    )
+
+    st.caption(
+        """
+        Source: World Bank World Development Indicators,
+        using threatened-species indicators associated with
+        international conservation assessments.
+        """
+    )
+
+    with st.expander(
+        "View the underlying biodiversity data"
+    ):
+        st.dataframe(
+            filtered_biodiversity,
+            width="stretch",
+            hide_index=True,
+        )
+
+st.info(
+    """
+    Important limitation: threatened-species counts are not a
+    complete measurement of biodiversity. Countries differ in
+    total species richness, geographic size, research effort,
+    assessment coverage, and reporting year. A larger count may
+    reflect greater extinction risk, greater natural species
+    richness, more extensive assessment, or a combination of
+    these factors.
+    """
+)
+
+
+# ---------------------------------------------------------
+# STATISTICAL ANALYSIS
+# ---------------------------------------------------------
 
 st.header("Statistical Relationships")
 
@@ -515,7 +720,9 @@ st.write(
     """
 )
 
-analysis_column_1, analysis_column_2 = st.columns(2)
+analysis_column_1, analysis_column_2 = (
+    st.columns(2)
+)
 
 population_scatter = px.scatter(
     filtered_change_data,
@@ -535,8 +742,7 @@ population_scatter = px.scatter(
         "year": "Year",
     },
     title=(
-        "Forest Change vs. "
-        "Population Growth"
+        "Forest Change vs. Population Growth"
     ),
 )
 
@@ -563,8 +769,7 @@ gdp_scatter = px.scatter(
         "year": "Year",
     },
     title=(
-        "Forest Change vs. "
-        "GDP-per-Capita Growth"
+        "Forest Change vs. GDP-per-Capita Growth"
     ),
 )
 
@@ -575,11 +780,18 @@ analysis_column_2.plotly_chart(
 
 st.subheader("Country-Level Correlations")
 
-st.dataframe(
-    correlation_table,
-    width="stretch",
-    hide_index=True,
-)
+if correlation_table.empty:
+    st.warning(
+        "There were not enough observations to calculate "
+        "the selected correlations."
+    )
+
+else:
+    st.dataframe(
+        correlation_table,
+        width="stretch",
+        hide_index=True,
+    )
 
 st.caption(
     """
@@ -590,7 +802,12 @@ st.caption(
     with increasing or less rapidly declining forest area.
     """
 )
-st.header("How to Interpret This Information")
+
+
+# ---------------------------------------------------------
+# SQL
+# ---------------------------------------------------------
+
 st.header("SQL Database Analysis")
 
 st.write(
@@ -662,6 +879,35 @@ ORDER BY
         """,
         language="sql",
     )
+
+
+# ---------------------------------------------------------
+# COMBINED DATA
+# ---------------------------------------------------------
+
+st.header("Combined Environmental Dataset")
+
+st.write(
+    """
+    This table combines forest area, population, and GDP per
+    capita for the same country and year.
+    """
+)
+
+with st.expander("View combined data"):
+    st.dataframe(
+        filtered_merged_data,
+        width="stretch",
+        hide_index=True,
+    )
+
+
+# ---------------------------------------------------------
+# INTERPRETATION
+# ---------------------------------------------------------
+
+st.header("How to Interpret This Information")
+
 st.markdown(
     """
     A decline in forest percentage may reflect deforestation,
@@ -682,6 +928,12 @@ st.markdown(
     trends, but it does not eliminate confounding variables,
     delayed effects, measurement limitations, or differences
     among countries.
+
+    Threatened-species counts provide evidence about biodiversity
+    risk, but they are not equivalent to total biodiversity or
+    the annual rate of biodiversity loss. Differences in species
+    richness, country size, scientific assessment, and reporting
+    coverage limit direct comparisons.
 
     Costa Rica is particularly important because its forest share
     increased over the study period. Its results demonstrate that
