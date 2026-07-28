@@ -107,6 +107,58 @@ if not selected_countries:
     )
 
 else:
+    st.subheader("Forest Change Summary")
+
+    summary_rows = []
+
+    for country_code in selected_country_codes:
+        country_data = (
+            filtered_data[
+                filtered_data["country_code"] == country_code
+            ]
+            .sort_values("year")
+        )
+
+        if country_data.empty:
+            continue
+
+        first_row = country_data.iloc[0]
+        latest_row = country_data.iloc[-1]
+
+        summary_rows.append(
+            {
+                "country": latest_row["country"],
+                "start_year": int(first_row["year"]),
+                "latest_year": int(latest_row["year"]),
+                "start_value": float(first_row["value"]),
+                "latest_value": float(latest_row["value"]),
+                "change": (
+                    float(latest_row["value"])
+                    - float(first_row["value"])
+                ),
+            }
+        )
+
+    if summary_rows:
+        summary_columns = st.columns(len(summary_rows))
+
+        for column, summary in zip(
+            summary_columns,
+            summary_rows,
+        ):
+            column.metric(
+                label=summary["country"],
+                value=f'{summary["latest_value"]:.1f}%',
+                delta=(
+                    f'{summary["change"]:+.1f} percentage points '
+                    f'since {summary["start_year"]}'
+                ),
+            )
+
+        st.caption(
+            "The cards show the latest available forest share "
+            "and its change from the first available year."
+        )
     figure = px.line(
         filtered_data,
         x="year",
