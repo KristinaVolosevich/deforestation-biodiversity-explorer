@@ -3,6 +3,10 @@ import plotly.express as px
 import streamlit as st
 
 from world_bank_api import get_indicator_data
+from database import (
+    initialize_database,
+    query_annual_change_summary,
+)
 
 
 st.set_page_config(
@@ -259,7 +263,10 @@ try:
     annual_change_data = calculate_annual_changes(
     merged_data
 )
-
+    initialize_database(
+    merged_data=merged_data,
+    annual_change_data=annual_change_data,
+)
 except Exception as error:
     st.error(
         "The application could not retrieve data from "
@@ -312,7 +319,9 @@ filtered_change_data = annual_change_data[
 correlation_table = build_correlation_table(
     filtered_change_data
 )
-
+sql_change_summary = query_annual_change_summary(
+    selected_country_codes
+)
 st.header("Forest Area Over Time")
 
 st.write(
@@ -582,7 +591,77 @@ st.caption(
     """
 )
 st.header("How to Interpret This Information")
+st.header("SQL Database Analysis")
 
+st.write(
+    """
+    The project stores its cleaned datasets in a DuckDB
+    database. The table below was produced with a SQL query
+    that groups annual forest changes by country.
+    """
+)
+
+st.dataframe(
+    sql_change_summary,
+    width="stretch",
+    hide_index=True,
+)
+
+sql_figure = px.bar(
+    sql_change_summary,
+    x="Country",
+    y="Average annual forest change (pp)",
+    labels={
+        "Average annual forest change (pp)": (
+            "Average annual forest change "
+            "(percentage points)"
+        ),
+    },
+    title=(
+        "Average Annual Change in Forest Share "
+        "by Country"
+    ),
+)
+
+st.plotly_chart(
+    sql_figure,
+    width="stretch",
+)
+
+st.caption(
+    """
+    Negative values indicate that forest's share of total land
+    declined on average during the years included in the merged
+    dataset.
+    """
+)
+
+with st.expander("View the SQL query"):
+    st.code(
+        """
+SELECT
+    country AS Country,
+    ROUND(
+        AVG(forest_change_pp),
+        3
+    ) AS "Average annual forest change (pp)",
+    ROUND(
+        MIN(forest_change_pp),
+        3
+    ) AS "Largest annual decline (pp)",
+    ROUND(
+        MAX(forest_change_pp),
+        3
+    ) AS "Largest annual increase (pp)",
+    COUNT(*) AS "Years analyzed"
+FROM annual_changes
+WHERE country_code IN (...)
+GROUP BY country
+ORDER BY
+    "Average annual forest change (pp)" ASC;
+        """,
+        language="sql",
+    )
 st.markdown(
     """
     A decline in forest percentage may reflect deforestation,
